@@ -1,12 +1,16 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useDropzone } from "react-dropzone";
+import { useRouter } from "next/navigation";
+
 import { useUploadAndAnalyze } from "../hooks/useUploadAndAnalyze";
 import { validateImageFile } from "../utils/validateImageFile";
+import FullScreenLoader from "./FullScreenLoader";
 
 export default function UploadEstimateScreen() {
+  const router = useRouter();
   const { jobId, statusText, isLoading, uploadAndAnalyze } =
     useUploadAndAnalyze();
   const [errorMsg, setErrorMsg] = useState("");
@@ -14,53 +18,55 @@ export default function UploadEstimateScreen() {
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       setErrorMsg("");
-
       const file = acceptedFiles?.[0];
       if (!file) return;
 
-      // ✅ 앞단 확장자/타입/용량 체크
       const valid = validateImageFile(file);
       if (!valid.ok) {
         setErrorMsg(valid.reason);
         return;
       }
 
-      await uploadAndAnalyze(file);
+      await uploadAndAnalyze(file, {
+        onComplete: ({ jobId }) => {
+          // ✅ 분석 완료 시 이동 (원하는 경로로 변경 가능)
+          router.push(`/result/${encodeURIComponent(jobId)}`);
+        },
+        onError: (msg) => setErrorMsg(msg),
+      });
     },
-    [uploadAndAnalyze]
+    [router, uploadAndAnalyze]
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } =
     useDropzone({
       onDrop,
       multiple: false,
-      // ✅ 이미지 파일만
-      accept: {
-        "image/*": [],
-      },
+      disabled: isLoading, // ✅ 로딩 중 입력 차단
+      accept: { "image/*": [] }, // ✅ 이미지 파일만
       maxSize: 20 * 1024 * 1024,
     });
 
-  // dropzone 레벨 rejection 메시지도 함께 처리 (보조)
-  const dropzoneRejection =
-    fileRejections?.[0]?.errors?.[0]?.code === "file-too-large"
-      ? "파일이 너무 큽니다. 최대 20MB까지 업로드할 수 있어요."
-      : fileRejections?.length
-      ? "이미지 파일만 업로드할 수 있어요."
-      : "";
+  const dropzoneRejection = useMemo(() => {
+    if (fileRejections?.[0]?.errors?.[0]?.code === "file-too-large")
+      return "파일이 너무 큽니다. 최대 20MB까지 업로드할 수 있어요.";
+    if (fileRejections?.length) return "이미지 파일만 업로드할 수 있어요.";
+    return "";
+  }, [fileRejections]);
 
   const message = errorMsg || dropzoneRejection;
 
   return (
-    <main className="min-h-screen bg-white flex flex-col items-center justify-start px-4 py-10 text-center">
-      <div className="max-w-md w-full">
+    <main className="min-h-screen bg-white flex flex-col items-center justify-start px-4 py-10 text-center relative max-w-md mx-auto">
+      {isLoading && <FullScreenLoader label="업로드 & 분석 중..." />}
+
+      <div className="max-w-md w-full relative z-10">
         <p className="text-gray-700 text-sm mb-6">
           1,265건 이상의 견적서 기반
           <br />
           AI 분석 결과를 10초만에 받아보세요
         </p>
 
-        {/* ✅ 로고: /public/mainLogo.png */}
         <div className="flex justify-center mb-8">
           <Image
             src="/mainLogo.png"
@@ -72,12 +78,26 @@ export default function UploadEstimateScreen() {
         </div>
 
         <div
-          {...getRootProps()}
+          {...getRootProps({
+            // (선택) 로딩 중에는 클릭도 막고 싶으면 유지
+            onClick: (e) => {
+              if (isLoading) e.preventDefault();
+            },
+          })}
           className={[
-            "mt-6 border-2 border-dashed rounded-lg py-14 px-4 cursor-pointer transition-colors",
-            isDragActive ? "border-primary" : "border-gray-300",
-            "hover:border-primary",
-          ].join(" ")}
+            "mt-6 rounded-lg py-14 px-4 transition-all select-none relative",
+            "border-2 border-dashed",
+
+            isLoading ? "opacity-60" : "cursor-pointer",
+
+            isDragActive
+              ? "border-main border-3 bg-main/10"
+              : "border-main-300 bg-transparent",
+
+            !isLoading && !isDragActive && "hover:border-main",
+          ]
+            .filter(Boolean)
+            .join(" ")}
         >
           <input {...getInputProps()} />
           <p className="text-black font-medium mb-2">
@@ -89,10 +109,6 @@ export default function UploadEstimateScreen() {
           <p className="text-xs text-gray-400 mt-1">
             이미지 가능 · 최대 <strong>20MB</strong>
           </p>
-
-          {isLoading && (
-            <p className="mt-4 text-sm text-gray-500">처리 중...</p>
-          )}
         </div>
 
         {!!message && <p className="mt-3 text-sm text-red-500">{message}</p>}
