@@ -7,34 +7,28 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+}
+
+@theme {
+  /* 기본 배경/글자색 (시스템 예약어) */
+  --background: #ffffff;
+  --foreground: #171717;
 
   /* Text Colors */
   --color-text-primary: #111827;
   --color-text-secondary: #6b7280;
   --color-text-muted: #9ca3af;
 
-  --main-color: #00bc8b; /* primary */
-  --main-light: #00e6aa; /* hover / light bg */
-  --main-dark: #018c68; /* heading / strong */
-  --main-shadow: rgba(48, 249, 209, 0.25);
+  /* Main Color System */
+  --color-main: #00bc8b;
+  --color-main-light: #00e6aa;
+  --color-main-dark: #018c68;
+  --color-main-shadow: rgba(48, 249, 209, 0.25);
 
-  --toast-shadow: #3d3d3d;
-}
+  --color-toast-shadow: #3d3d3d;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-
-  /* ✅ main color system -> Tailwind tokens */
-  --color-main: var(--main-color);
-  --color-main-light: var(--main-light);
-  --color-main-dark: var(--main-dark);
-  --color-main-shadow: var(--main-shadow);
-
-  --color-toast-shadow: var(--toast-shadow);
-
-  /* ✅ shadow token */
-  --shadow-main: 0 4px 12px var(--main-shadow);
+  /* Shadow Token (위에서 정의한 변수 바로 참조 가능) */
+  --shadow-main: 0 4px 12px var(--color-main-shadow);
 }
 
 @media (prefers-color-scheme: dark) {
