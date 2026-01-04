@@ -84,7 +84,7 @@ export default async function ResultPage({
 
         {/* 차트 더미 */}
         <div>
-          <MealLineChart highlightX={110000} highlightLabel="65,000원" />
+          <MealLineChart highlightX={50000} highlightLabel="65,000원" />
         </div>
 
         <p className="text-xs text-gray-500 mt-2">
