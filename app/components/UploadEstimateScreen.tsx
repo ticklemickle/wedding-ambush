@@ -1,25 +1,65 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useMemo, useState } from "react";
-import { useDropzone } from "react-dropzone";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { FileRejection, useDropzone } from "react-dropzone";
 import { useRouter } from "next/navigation";
 
 import { useUploadAndAnalyze } from "../hooks/useUploadAndAnalyze";
 import { validateImageFile } from "../utils/validateImageFile";
 import FullScreenLoader from "./FullScreenLoader";
 
+const MAX_SIZE = 20 * 1024 * 1024;
+const ACCEPT = { "image/*": [] as string[] };
+
+function rejectionMessage(rejections: readonly FileRejection[]) {
+  const first = rejections?.[0];
+  const code = first?.errors?.[0]?.code;
+
+  if (code === "file-too-large")
+    return "파일이 너무 큽니다. 최대 20MB까지 업로드할 수 있어요.";
+  if (code === "file-invalid-type") return "이미지 파일만 업로드할 수 있어요.";
+  if (rejections?.length) return "업로드할 수 없는 파일입니다.";
+  return "";
+}
+
 export default function UploadEstimateScreen() {
+  const UPLOAD_TIMEOUT_MS = 60_000; // 60초 (원하시면 변경)
+
+  const inFlightRef = useRef(false);
+  const lastFileKeyRef = useRef<string | null>(null);
+  const requestSeqRef = useRef(0);
+
   const router = useRouter();
   const { jobId, statusText, isLoading, uploadAndAnalyze } =
     useUploadAndAnalyze();
+
+  const [uiError, setUiError] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
+      setUiError("");
       setErrorMsg("");
+
+      // 1) 중복 업로드 방지: 업로드 진행 중이면 즉시 차단
+      if (inFlightRef.current || isLoading) {
+        setUiError("이미 업로드가 진행 중입니다. 잠시만 기다려주세요.");
+        return;
+      }
+
       const file = acceptedFiles?.[0];
       if (!file) return;
+
+      // 같은 파일 연속 업로드 방지(이름/용량/수정시간 기준)
+      const fileKey = `${file.name}_${file.size}_${file.lastModified}`;
+      if (lastFileKeyRef.current === fileKey) {
+        setUiError(
+          "같은 파일이 이미 업로드 요청되었습니다. 다른 파일을 선택해주세요."
+        );
+        return;
+      }
 
       const valid = validateImageFile(file);
       if (!valid.ok) {
@@ -27,34 +67,69 @@ export default function UploadEstimateScreen() {
         return;
       }
 
-      await uploadAndAnalyze(file, {
-        onComplete: ({ jobId }) => {
-          // ✅ 분석 완료 시 이동 (원하는 경로로 변경 가능)
-          router.push(`/result/${encodeURIComponent(jobId)}`);
-        },
-        onError: (msg) => setErrorMsg(msg),
+      inFlightRef.current = true;
+      lastFileKeyRef.current = fileKey;
+
+      // 2) timeout + 늦게 도착한 응답 무시를 위한 request id
+      const mySeq = ++requestSeqRef.current;
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        const id = setTimeout(() => {
+          clearTimeout(id);
+          reject(
+            new Error(
+              "업로드 시간이 초과되었습니다. 네트워크 상태를 확인하고 다시 시도해주세요."
+            )
+          );
+        }, UPLOAD_TIMEOUT_MS);
       });
+
+      try {
+        const result = await Promise.race([
+          uploadAndAnalyze(file),
+          timeoutPromise,
+        ]);
+
+        // timeout 이후 늦게 성공 응답이 와도 무시
+        if (mySeq !== requestSeqRef.current) return;
+
+        const { jobId } = result as { jobId: string };
+        // 요청하신 대로 /result 로 이동 (jobId는 query로 전달)
+        router.push(`/result?jobId=${encodeURIComponent(jobId)}`);
+      } catch (e) {
+        // timeout/업로드 실패 모두 여기로
+        if (mySeq !== requestSeqRef.current) return;
+
+        const msg =
+          e instanceof Error ? e.message : "업로드 중 오류가 발생했습니다.";
+        setUiError(msg);
+
+        // 실패면 같은 파일 재시도는 허용하는 편이 UX 좋음 → lastFileKey 해제
+        lastFileKeyRef.current = null;
+      } finally {
+        if (mySeq === requestSeqRef.current) {
+          inFlightRef.current = false;
+        }
+      }
     },
-    [router, uploadAndAnalyze]
+    [router, uploadAndAnalyze, isLoading]
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } =
     useDropzone({
       onDrop,
       multiple: false,
-      disabled: isLoading, // ✅ 로딩 중 입력 차단
-      accept: { "image/*": [] }, // ✅ 이미지 파일만
-      maxSize: 20 * 1024 * 1024,
+      disabled: isLoading,
+      accept: ACCEPT,
+      maxSize: MAX_SIZE,
     });
 
-  const dropzoneRejection = useMemo(() => {
-    if (fileRejections?.[0]?.errors?.[0]?.code === "file-too-large")
-      return "파일이 너무 큽니다. 최대 20MB까지 업로드할 수 있어요.";
-    if (fileRejections?.length) return "이미지 파일만 업로드할 수 있어요.";
-    return "";
-  }, [fileRejections]);
+  const dropzoneError = useMemo(
+    () => rejectionMessage(fileRejections),
+    [fileRejections]
+  );
 
-  const message = errorMsg || dropzoneRejection;
+  const message = errorMsg || uiError || dropzoneError;
 
   return (
     <div className="min-h-[100dvh] flex justify-center bg-[#f9fafb] p-4">
@@ -66,7 +141,12 @@ export default function UploadEstimateScreen() {
           "px-4 py-12",
         ].join(" ")}
       >
-        {isLoading && <FullScreenLoader label="업로드 & 분석 중..." />}
+        {isLoading && (
+          <FullScreenLoader
+            label="분석 중입니다..."
+            subLabel="잠시만 기다려주세요."
+          />
+        )}
 
         <div className="max-w-md w-full relative z-10 flex flex-col flex-1">
           <p className="text-gray-700 font-350 text-base mb-6">

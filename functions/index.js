@@ -27,7 +27,8 @@ exports.ocrOnUpload = onObjectFinalized(
     if (!filePath.startsWith("uploads/")) return;
     if (!contentType.startsWith("image/")) return;
 
-    const jobId = filePath.split("/")[1];
+    const [, date, fileName] = filePath.split("/");
+    const jobId = fileName.split("_")[0];
 
     try {
       // 1) Storage에서 파일 다운로드
@@ -118,21 +119,25 @@ Extract JSON:
       const output = response.output_text;
 
       // 3) Firestore 저장
-      await db.collection("ocrJobs").doc(jobId).set({
+      await db.collection("ocrJobs").doc(date).set({
+        jobId,
         result: output,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         contentType,
         filePath,
+        fileName,
       });
     } catch (e) {
       await db
         .collection("ocrJobs")
-        .doc(jobId)
+        .doc(date)
         .set({
+          jobId,
           error: String(e?.message || e),
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           contentType,
           filePath,
+          fileName,
         });
     }
   }

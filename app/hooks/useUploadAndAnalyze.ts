@@ -5,19 +5,7 @@ import { db, storage } from "@/lib/firebase";
 import { ref, uploadBytes } from "firebase/storage";
 import { doc, onSnapshot } from "firebase/firestore";
 import { resizeImageFile } from "../components/ResizeImage";
-
-function getTimestamp() {
-  const now = new Date();
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return (
-    now.getFullYear().toString() +
-    pad(now.getMonth() + 1) +
-    pad(now.getDate()) +
-    pad(now.getHours()) +
-    pad(now.getMinutes()) +
-    pad(now.getSeconds())
-  );
-}
+import { generateJobId } from "../components/DateFunction";
 
 type CompletePayload = {
   jobId: string;
@@ -29,97 +17,113 @@ export function useUploadAndAnalyze() {
   const [jobId, setJobId] = useState("");
   const [statusText, setStatusText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [resultData, setResultData] = useState<any>(null);
+  const [error, setError] = useState<string>("");
 
   const unsubRef = useRef<null | (() => void)>(null);
 
-  useEffect(() => {
-    return () => {
-      if (unsubRef.current) unsubRef.current();
-    };
+  const cleanupSnapshot = useCallback(() => {
+    if (unsubRef.current) unsubRef.current();
+    unsubRef.current = null;
   }, []);
 
+  useEffect(() => cleanupSnapshot, [cleanupSnapshot]);
+
   const uploadAndAnalyze = useCallback(
-    async (
-      inputFile: File,
-      opts?: {
-        onComplete?: (payload: CompletePayload) => void;
-        onError?: (message: string) => void;
-      }
-    ) => {
-      if (unsubRef.current) unsubRef.current();
+    async (inputFile: File) => {
+      cleanupSnapshot();
 
       setIsLoading(true);
-      setStatusText("업로드 준비 중...");
+      setError("");
       setResultData(null);
+      setStatusText("업로드 준비 중...");
 
-      // 이미지 리사이즈 (이미지 전용 업로드 전제)
-      const uploadFile = await resizeImageFile(inputFile, 1600, 0.85);
-
-      const id =
-        `${getTimestamp()}_` +
-        Math.random().toString(36).substring(2, 5) +
-        "_" +
-        uploadFile.name;
-
+      const id = generateJobId();
       setJobId(id);
-      setStatusText("업로드 중...");
 
-      unsubRef.current = onSnapshot(doc(db, "ocrJobs", id), (snap) => {
-        if (!snap.exists()) return;
+      try {
+        // 이미지 리사이즈 (이미지 전용 업로드 전제)
+        const uploadFile = await resizeImageFile(inputFile, 1600, 0.85);
+        const originalFileName = inputFile.name;
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data = snap.data() as any;
+        const yyyyMMdd = id.slice(0, 8);
+        const storagePath = `uploads/${yyyyMMdd}/${id}_${originalFileName}`;
 
-        if (data?.error) {
-          const msg = `에러: ${data.error}`;
-          setStatusText(msg);
-          setIsLoading(false);
-          opts?.onError?.(msg);
-          return;
-        }
+        setStatusText("업로드 중...");
 
-        // 백엔드가 저장하는 키 우선순위
-        const text = data.text || data.result || data.rawText || "";
-        if (text) setStatusText(text);
+        // 완료를 기다릴 Promise (snapshot이 done/결과를 찍어주는 순간 resolve)
+        const donePromise = new Promise<CompletePayload>((resolve, reject) => {
+          unsubRef.current = onSnapshot(doc(db, "ocrJobs", id), (snap) => {
+            if (!snap.exists()) return;
 
-        // 완료 판단: 결과가 들어왔을 때
-        // (프로젝트에 맞게 data.status === "DONE" 같은 조건이 있으면 그걸로 바꿔도 됩니다)
-        if (
-          data &&
-          (data.text || data.result || data.rawText || data.done === true)
-        ) {
-          setResultData(data);
-          setIsLoading(false);
-          opts?.onComplete?.({ jobId: id, data });
-        }
-      });
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const data = snap.data() as any;
 
-      const storageRef = ref(storage, `uploads/${id}`);
-      await uploadBytes(storageRef, uploadFile, {
-        contentType: uploadFile.type,
-      });
+            if (data?.error) {
+              const msg = `에러: ${data.error}`;
+              setError(msg);
+              setStatusText(msg);
+              cleanupSnapshot();
+              reject(new Error(msg));
+              return;
+            }
 
-      setStatusText("분석 중...");
+            // 백엔드가 저장하는 키 우선순위
+            const text = data.text || data.result || data.rawText || "";
+            if (text) setStatusText(text);
+
+            const done =
+              !!data &&
+              (data.text || data.result || data.rawText || data.done === true);
+
+            if (done) {
+              setResultData(data);
+              cleanupSnapshot();
+              resolve({ jobId: id, data });
+            }
+          });
+        });
+
+        const storageRef = ref(storage, storagePath);
+        await uploadBytes(storageRef, uploadFile, {
+          contentType: uploadFile.type,
+        });
+
+        setStatusText("분석 중...");
+        // 분석 완료 대기
+        const payload = await donePromise;
+        return payload;
+      } catch (e) {
+        const msg =
+          e instanceof Error ? e.message : "알 수 없는 오류가 발생했습니다.";
+        setError(msg);
+        setStatusText(msg);
+        cleanupSnapshot();
+        throw e;
+      } finally {
+        setIsLoading(false);
+      }
     },
-    []
+    [cleanupSnapshot]
   );
+
+  const clear = useCallback(() => {
+    setJobId("");
+    setStatusText("");
+    setIsLoading(false);
+    setResultData(null);
+    setError("");
+    cleanupSnapshot();
+  }, [cleanupSnapshot]);
 
   return {
     jobId,
     statusText,
     isLoading,
     resultData,
+    error,
     uploadAndAnalyze,
-    clear: () => {
-      setJobId("");
-      setStatusText("");
-      setIsLoading(false);
-      setResultData(null);
-      if (unsubRef.current) unsubRef.current();
-      unsubRef.current = null;
-    },
+    clear,
   };
 }
