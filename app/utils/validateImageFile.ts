@@ -2,11 +2,11 @@ const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "heic"] as const;
 type AllowedExt = (typeof ALLOWED_EXTENSIONS)[number];
 
 export function validateImageFile(
-  file: File
+  file: File,
 ): { ok: true } | { ok: false; reason: string } {
   // 1) MIME 체크 (1차)
   if (!file.type.startsWith("image/")) {
-    return { ok: false, reason: "이미지 파일만 업로드할 수 있어요." };
+    return { ok: false, reason: "이미지 파일만 업로드 해주세요" };
   }
 
   // 2) 확장자 체크 (2차)
@@ -23,7 +23,7 @@ export function validateImageFile(
   if (!ALLOWED_EXTENSIONS.includes(ext as AllowedExt)) {
     return {
       ok: false,
-      reason: "지원하지 않는 확장자예요. 이미지 파일만 가능해요.",
+      reason: "이미지 파일만 분석 가능합니다",
     };
   }
 
@@ -32,7 +32,8 @@ export function validateImageFile(
   if (file.size > MAX) {
     return {
       ok: false,
-      reason: "파일이 너무 큽니다. 최대 20MB까지 업로드할 수 있어요.",
+      reason:
+        "파일이 너무 큽니다. 최대 20MB까지 업로드할 수 있어요. 캡쳐한 파일을 올려보세요!",
     };
   }
 

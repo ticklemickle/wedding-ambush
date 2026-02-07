@@ -41,7 +41,8 @@ exports.ocrOnUpload = onObjectFinalized(
 
       // 2) GPT Vision 호출
       const response = await openai.responses.create({
-        model: "gpt-4o-mini",
+        ///       model: "gpt-4o-mini",
+        model: "gpt-3.5-turbo",
         input: [
           {
             role: "user",
@@ -140,5 +141,5 @@ Extract JSON:
           fileName,
         });
     }
-  }
+  },
 );

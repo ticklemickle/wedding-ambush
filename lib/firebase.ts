@@ -1,4 +1,4 @@
-import { initializeApp } from "firebase/app";
+import { getApp, getApps, initializeApp } from "firebase/app";
 import { getStorage } from "firebase/storage";
 import { getFirestore } from "firebase/firestore";
 
@@ -12,7 +12,11 @@ const firebaseConfig = {
   measurementId: "G-9G69VZ0L1R",
 };
 
-const app = initializeApp(firebaseConfig);
+export const app =
+  getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+
+console.log("[firebase:init] projectId:", app.options.projectId);
+console.log("[firebase:init] storageBucket:", app.options.storageBucket);
 
 export const storage = getStorage(app);
 export const db = getFirestore(app);
