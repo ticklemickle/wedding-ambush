@@ -207,7 +207,7 @@ export function useUploadAndAnalyze() {
 
         const originalFileName = inputFile.name;
         const yyyyMMdd = id.slice(0, 8);
-        const hhmmssR = id.slice(8, 16);
+        const hhmmssR = id.slice(9, 17);
         const storagePath = `uploads/${yyyyMMdd}/${hhmmssR}_${originalFileName}`;
 
         setMessage("업로드 중... (0%)");

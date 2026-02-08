@@ -1,74 +1,127 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const admin = require("firebase-admin");
 const { onObjectFinalized } = require("firebase-functions/v2/storage");
-const OpenAI = require("openai");
-const { getStorage } = require("firebase-admin/storage");
+const { defineSecret } = require("firebase-functions/params");
+const vision = require("@google-cloud/vision");
 
 admin.initializeApp();
 const db = admin.firestore();
-const storage = getStorage();
 
-exports.ocrOnUpload = onObjectFinalized(
-  {
-    region: "us-east1",
-    memory: "512MiB",
-    timeoutSeconds: 60,
-    secrets: ["OPENAI_API_KEY"],
-  },
-  async (event) => {
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+const visionClient = new vision.ImageAnnotatorClient();
 
-    const object = event.data;
-    const filePath = object.name || "";
-    const contentType = object.contentType || "";
+const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 
-    if (!filePath.startsWith("uploads/")) return;
-    if (!contentType.startsWith("image/")) return;
+const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";
 
-    const [, date, fileName] = filePath.split("/");
-    const jobId = fileName.split("_")[0];
+const LEASE_MS = 1 * 60 * 1000; // 1분
 
-    try {
-      // 1) Storage에서 파일 다운로드
-      const bucket = storage.bucket(object.bucket);
-      const file = bucket.file(filePath);
-      const [buffer] = await file.download();
+function nowMs() {
+  return Date.now();
+}
 
-      // 2) base64로 변환
-      const base64 = buffer.toString("base64");
+function parseUploadPath(filePath) {
+  const [, date, fileName] = filePath.split("/");
+  const rawId = fileName.split("_")[0];
+  const jobId = `${date}_${rawId}`;
 
-      // 2) GPT Vision 호출
-      const response = await openai.responses.create({
-        ///       model: "gpt-4o-mini",
-        model: "gpt-3.5-turbo",
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `
-You analyze Korean wedding estimate images.
-If the image is not a wedding estimate, return
-{"result": "NOT_WEDDING_ESTIMATE"}
+  return { date, jobId };
+}
 
+async function acquireLease(jobRef, owner, storagePath) {
+  const leaseUntil = nowMs() + LEASE_MS;
+
+  return await db.runTransaction(async (tx) => {
+    const snap = await tx.get(jobRef);
+    const data = snap.exists ? snap.data() : null;
+
+    // 멱등성: 이미 완료면 종료
+    if (data?.status === "DONE" || data?.status === "FAILED") {
+      return { ok: false, reason: "ALREADY_FINISHED" };
+    }
+
+    // 락 확인
+    const currentUntil = data?.lease?.until || 0;
+    if (currentUntil > nowMs()) {
+      return { ok: false, reason: "LEASE_HELD" };
+    }
+
+    tx.set(
+      jobRef,
+      {
+        status: data?.status || "OCR_RUNNING",
+        storagePath: data?.storagePath || storagePath,
+        createdAt:
+          data?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lease: { owner, until: leaseUntil },
+      },
+      { merge: true },
+    );
+
+    return { ok: true, leaseUntil };
+  });
+}
+
+async function releaseLease(jobRef, owner) {
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(jobRef);
+    const data = snap.exists ? snap.data() : null;
+    if (data?.lease?.owner !== owner) return;
+
+    tx.set(
+      jobRef,
+      { lease: admin.firestore.FieldValue.delete() },
+      { merge: true },
+    );
+  });
+}
+
+async function runVisionOcrFromGcs(bucketName, filePath) {
+  const bucket = admin.storage().bucket(bucketName);
+  const file = bucket.file(filePath);
+  const [buffer] = await file.download();
+
+  const [result] = await visionClient.documentTextDetection({
+    image: { content: buffer },
+  });
+
+  const text =
+    result.fullTextAnnotation?.text ||
+    result.textAnnotations?.[0]?.description ||
+    "";
+
+  return { text };
+}
+
+function compressOcrForLLM(rawText) {
+  const keepKeyword =
+    /(아트홀|그랜드볼룸|연회장|뷔페|토요일|일요일|예식시간|총견적|대관료|식대|대인|소인|석)/;
+
+  const keepNumber = /(\d{1,2}:\d{2})|(\d{1,3},\d{3})|(원)|(명)|(\d+\|\d+)/;
+
+  return rawText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => l.replace(/[※*].*$/, "").replace(/\s+/g, " "))
+    .filter((l) => keepNumber.test(l) || keepKeyword.test(l))
+    .slice(0, 160)
+    .join("\n");
+}
+
+function buildPrompt(ocrText) {
+  return `
+You are a parser, not an analyst.
+The input is noisy OCR text from a wedding venue price list / estimate sheet in Korean + English.
 
 Rules:
-Priority
-- Offered prices override printed prices
-- handwritten > highlighted > printed(digital)
-
 Venue
 - Extract venue name and normalize to Korean
 - If unclear, set value to "unidentify"
 
 Selection
-- The image may contain multiple dates, times, or estimates
 - One price set per date/time only
 - If multiple values exist for the same field, choose the final or emphasized one
-- If no offered price exists, set value to null
 
 Output
 - Multiple estimates are allowed
@@ -89,57 +142,135 @@ meal 50,000~200,000
 guests 50~500
 total_cost 10,000,000~100,000,000
 
-Extract JSON:
-
+Output format:
 {
-  "overall": {"a": },
-  "venue": { "v": "", "a": },
+  "overall": {"a": null},
+  "venue": { "v": "", "a": null },
   "estimates": [
     {
-      "date": { "v": "", "a":  },
-      "day": { "v": "", "a":  },
-      "time": { "v": "", "a":  },
-      "rental": { "v": 0, "a": },
-      "meal": { "v": 0, "a": },
-      "guests": { "v": 0, "a": },
-      "total_cost": { "v": 0, "a": }
+      "date": { "v": null, "a": null },
+      "day": { "v": null, "a": null },
+      "time": { "v": null, "a": null },
+      "rental": { "v": null, "a": null },
+      "meal": { "v": null, "a": null },
+      "guests": { "v": null, "a": null },
+      "total_cost": { "v": null, "a": null }
     }
   ]
 }
-                `.trim(),
-              },
-              {
-                type: "input_image",
-                image_url: `data:${contentType};base64,${base64}`,
-              },
-            ],
-          },
-        ],
-      });
 
-      const output = response.output_text;
+OCR TEXT:
+<<<
+${ocrText}
+>>>
+`;
+}
 
-      // 3) Firestore 저장
-      await db.collection("ocrJobs").doc(date).set({
-        jobId,
-        result: output,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        contentType,
-        filePath,
-        fileName,
-      });
-    } catch (e) {
-      await db
-        .collection("ocrJobs")
-        .doc(date)
-        .set({
+async function runGeminiFast(apiKey, rawOcrText, model) {
+  const { GoogleGenAI } = require("@google/genai");
+  const ai = new GoogleGenAI({ apiKey });
+  const compressed = compressOcrForLLM(rawOcrText);
+  const prompt = buildPrompt(compressed);
+
+  const res = await ai.models.generateContent({
+    model,
+    contents: prompt,
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 1024,
+    },
+  });
+
+  return res.text || "[]";
+}
+
+exports.ocrOnUpload = onObjectFinalized(
+  {
+    region: "us-east1",
+    memory: "1GiB",
+    timeoutSeconds: 120,
+    secrets: [GEMINI_API_KEY],
+  },
+  async (event) => {
+    const object = event.data;
+    const filePath = object.name || "";
+    const contentType = object.contentType || "";
+
+    // uploads/ 아래 이미지에만 반응
+    if (!filePath.startsWith("uploads/")) return;
+    if (!contentType.startsWith("image/")) return;
+
+    const parsed = parseUploadPath(filePath);
+    if (!parsed) return;
+
+    const { date, jobId } = parsed;
+
+    // ✅ 클라이언트가 구독하는 컬렉션에 맞추세요
+    const jobRef = db.collection("ocrJobs").doc(jobId);
+
+    const owner = `fn-${process.env.GCLOUD_PROJECT || "proj"}-${process.env.FUNCTION_TARGET || "ocrOnUpload"}`;
+
+    const lease = await acquireLease(jobRef, owner, filePath);
+    if (!lease.ok) return;
+
+    try {
+      // OCR_RUNNING
+      await jobRef.set(
+        {
           jobId,
-          error: String(e?.message || e),
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          date,
+          status: "OCR_RUNNING",
+          storagePath: filePath,
           contentType,
-          filePath,
-          fileName,
-        });
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      // Vision OCR
+      const ocr = await runVisionOcrFromGcs(object.bucket, filePath);
+
+      // LLM_RUNNING
+      await jobRef.set(
+        {
+          status: "LLM_RUNNING",
+          ocrText: ocr.text,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      // ✅ Gemini
+      const apiKey = GEMINI_API_KEY.value();
+      const model = DEFAULT_GEMINI_MODEL;
+
+      const aiJson = await runGeminiFast(apiKey, ocr.text, model);
+      // DONE
+      await jobRef.set(
+        {
+          status: "DONE",
+          resultSummary: aiJson,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          finishedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    } catch (e) {
+      console.error("Analyze Error:", e);
+      await jobRef.set(
+        {
+          status: "FAILED",
+          error: {
+            message: String(e?.message || e),
+            name: e?.name || null,
+          },
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          finishedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    } finally {
+      await releaseLease(jobRef, owner);
     }
   },
 );
