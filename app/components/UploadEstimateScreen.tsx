@@ -1,125 +1,111 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useMemo, useRef, useState, useEffect } from "react";
-import { FileRejection, useDropzone } from "react-dropzone";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { useUploadAndAnalyze } from "../hooks/useUploadAndAnalyze";
-import { validateImageFile } from "../utils/validateImageFile";
 import FullScreenLoader from "./FullScreenLoader";
-import { TEMP_ERROR_MSG, toUserMessage } from "../utils/uploadErrors";
 
-const MAX_SIZE = 20 * 1024 * 1024;
-const ACCEPT = { "image/*": [] as string[] };
+const TIME_OPTIONS = [
+  "11:00",
+  "11:30",
+  "12:00",
+  "12:30",
+  "13:00",
+  "13:30",
+  "14:00",
+  "14:30",
+  "15:00",
+  "15:30",
+  "16:00",
+  "16:30",
+  "17:00",
+  "17:30",
+  "18:00",
+  "18:30",
+  "19:00",
+  "19:30",
+  "20:00",
+];
 
-function rejectionMessage(rejections: readonly FileRejection[]) {
-  const first = rejections?.[0];
-  const code = first?.errors?.[0]?.code;
+function clampNumberString(v: string) {
+  return v.replace(/[^0-9]/g, "");
+}
 
-  if (code === "file-too-large")
-    return "파일이 너무 큽니다. 최대 20MB까지 업로드할 수 있어요.";
-  if (code === "file-invalid-type") return "이미지 파일만 업로드할 수 있어요.";
-  if (rejections?.length) return "업로드할 수 없는 파일입니다.";
-  return "";
+function getKoreanWeekday(date: Date) {
+  return ["일", "월", "화", "수", "목", "금", "토"][date.getDay()];
 }
 
 export default function UploadEstimateScreen() {
-  const UPLOAD_TIMEOUT_MS = 20_000;
-
   const router = useRouter();
-  const { isLoading, uploadAndAnalyze } = useUploadAndAnalyze();
 
+  const [isLoading, setIsLoading] = useState(false);
   const [uiError, setUiError] = useState("");
-  const [errorMsg, setErrorMsg] = useState("");
 
-  const inFlightRef = useRef(false);
-  const lastFileKeyRef = useRef<string | null>(null);
+  // Form state (UI)
+  const [weddingHall, setWeddingHall] = useState("");
+  const [year, setYear] = useState("2026");
+  const [month, setMonth] = useState("12");
+  const [day, setDay] = useState("31");
+  const [time, setTime] = useState("11:00");
+  const [guarantee, setGuarantee] = useState("");
+  const [mealPrice, setMealPrice] = useState("");
+  const [hallFee, setHallFee] = useState("");
 
-  // (선택) 컴포넌트 언마운트 시 현재 요청 취소
-  const abortRef = useRef<AbortController | null>(null);
-  useEffect(() => {
-    return () => abortRef.current?.abort();
-  }, []);
+  const weekday = useMemo(() => {
+    const y = Number(year);
+    const m = Number(month);
+    const d = Number(day);
+    if (!y || !m || !d) return "";
+    const dt = new Date(y, m - 1, d);
+    if (Number.isNaN(dt.getTime())) return "";
+    return getKoreanWeekday(dt);
+  }, [year, month, day]);
 
-  const onDrop = useCallback(
-    async (acceptedFiles: File[]) => {
-      setUiError("");
-      setErrorMsg("");
+  const canSubmit = useMemo(() => {
+    return (
+      !!weddingHall &&
+      year.length === 4 &&
+      !!month &&
+      !!day &&
+      !!time &&
+      !!guarantee &&
+      !!mealPrice &&
+      !!hallFee
+    );
+  }, [weddingHall, year, month, day, time, guarantee, mealPrice, hallFee]);
 
-      if (inFlightRef.current || isLoading) {
-        setUiError("이미 업로드가 진행 중입니다. 잠시만 기다려주세요.");
-        return;
-      }
+  const onSubmit = async () => {
+    if (isLoading) return;
+    setUiError("");
 
-      const file = acceptedFiles?.[0];
-      if (!file) return;
+    if (!canSubmit) {
+      setUiError("필수 항목을 모두 입력해주세요.");
+      return;
+    }
 
-      const fileKey = `${file.name}_${file.size}_${file.lastModified}`;
-      if (lastFileKeyRef.current === fileKey) {
-        setUiError(
-          "같은 파일이 이미 업로드 요청되었습니다. 다른 파일을 선택해주세요.",
-        );
-        return;
-      }
-
-      const valid = validateImageFile(file);
-      if (!valid.ok) {
-        setErrorMsg(valid.reason);
-        return;
-      }
-
-      inFlightRef.current = true;
-      lastFileKeyRef.current = fileKey;
-
-      // 새 요청 시작 전, 이전 요청이 있으면 취소
-      abortRef.current?.abort();
-      abortRef.current = new AbortController();
-
-      try {
-        const payload = await uploadAndAnalyze(file, {
-          timeoutMs: UPLOAD_TIMEOUT_MS,
-          signal: abortRef.current.signal,
-        });
-
-        if (!payload?.jobId) {
-          setUiError(TEMP_ERROR_MSG);
-          lastFileKeyRef.current = null;
-          return;
-        }
-
-        router.push(`/result?jobId=${encodeURIComponent(payload.jobId)}`);
-      } catch (e) {
-        // abort 포함 모든 에러를 유틸로 메시지화
-        const msg = toUserMessage(e);
-        setUiError(msg);
-
-        // 실패면 재시도 허용
-        lastFileKeyRef.current = null;
-      } finally {
-        inFlightRef.current = false;
-      }
-    },
-    [router, uploadAndAnalyze, isLoading],
-  );
-
-  const { getRootProps, getInputProps, isDragActive, fileRejections } =
-    useDropzone({
-      onDrop,
-      multiple: false,
-      disabled: isLoading,
-      accept: ACCEPT,
-      maxSize: MAX_SIZE,
-    });
-
-  const dropzoneError = useMemo(
-    () => rejectionMessage(fileRejections),
-    [fileRejections],
-  );
-  const message = errorMsg || uiError || dropzoneError;
+    // 디자인 반영 목적의 UI 화면입니다.
+    // 실제 분석 API/라우팅은 프로젝트 스펙에 맞춰 연결해 주세요.
+    setIsLoading(true);
+    try {
+      const params = new URLSearchParams({
+        weddingHall,
+        date: `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`,
+        time,
+        guarantee,
+        mealPrice,
+        hallFee,
+      });
+      router.push(`/result?${params.toString()}`);
+    } catch {
+      setUiError("요청 처리 중 오류가 발생했습니다. 다시 시도해주세요.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
-    <div className="min-h-[100dvh] flex justify-center bg-[#f9fafb] p-4">
+    <div className="min-h-[100dvh] flex justify-center bg-[#f9fafb] p-2">
       <main
         className={[
           "bg-white flex flex-col items-center text-center relative",
@@ -152,47 +138,203 @@ export default function UploadEstimateScreen() {
             />
           </div>
 
-          <div className="flex justify-center">
-            <div
-              {...getRootProps({
-                onClick: (e) => {
-                  if (isLoading) e.preventDefault();
-                },
-              })}
-              className={[
-                "w-[260px] sm:w-[270px] aspect-square",
-                "flex flex-col items-center justify-center",
-                "p-6",
-                "border-[1.5px] border-dashed",
-                isLoading ? "opacity-60" : "cursor-pointer",
-                isDragActive
-                  ? "border-main border-3 bg-main/10"
-                  : "border-main-300 bg-transparent",
-                !isLoading &&
-                  !isDragActive &&
-                  "hover:border-main hover:border-3",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-            >
-              <input {...getInputProps()} />
-              <p className="text-black mb-4">
-                {isDragActive ? "여기에 놓아 업로드" : "웨딩홀 견적서 업로드"}
-              </p>
-              <p className="text-sm text-gray-400 font-310">
-                또는 파일을 여기로 끌어 놓으세요
-              </p>
-              <p className="text-xs text-gray-400 mt-1 font-310">
-                이미지 파일만 가능·최대 20MB
-              </p>
+          {/* Form */}
+          <div className="w-full px-2">
+            {/* Wedding hall select */}
+            <div className="relative w-full mt-2">
+              <select
+                value={weddingHall}
+                onChange={(e) => setWeddingHall(e.target.value)}
+                className={[
+                  "w-full h-[56px] rounded-2xl",
+                  "border border-gray-300",
+                  "px-5 pr-12",
+                  "text-base",
+                  weddingHall ? "text-gray-900" : "text-gray-400",
+                  "outline-none focus:ring-2 focus:ring-main/30 focus:border-main",
+                  "appearance-none bg-white",
+                ].join(" ")}
+              >
+                <option value="" disabled>
+                  웨딩홀 선택
+                </option>
+                {/* 예시 옵션 - 실제 데이터로 교체 */}
+                <option value="a">A 웨딩홀</option>
+                <option value="b">B 웨딩홀</option>
+                <option value="c">C 웨딩홀</option>
+              </select>
+              <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
+                ▼
+              </span>
             </div>
+
+            <div className="mt-8 space-y-5">
+              {/* Date */}
+              <div className="w-full text-left font-700 text-black tracking-[-0.02em]">
+                <div className="grid grid-cols-[minmax(54,2.5fr)_auto_minmax(44px,2fr)_auto_minmax(44px,2fr)_auto_auto] items-center gap-2">
+                  <input
+                    inputMode="numeric"
+                    value={year}
+                    onChange={(e) =>
+                      setYear(clampNumberString(e.target.value).slice(0, 4))
+                    }
+                    className="w-full min-w-0 h-[46px] rounded-xl border border-gray-300 text-center text-gray-500 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
+                    placeholder="YYYY"
+                  />
+                  <span className="text-base whitespace-nowrap">년</span>
+
+                  <input
+                    inputMode="numeric"
+                    value={month}
+                    onChange={(e) =>
+                      setMonth(clampNumberString(e.target.value).slice(0, 2))
+                    }
+                    className="w-full min-w-0 h-[46px] rounded-xl border border-gray-300 text-center text-gray-500 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
+                    placeholder="MM"
+                  />
+                  <span className="text-base whitespace-nowrap">월</span>
+
+                  <input
+                    inputMode="numeric"
+                    value={day}
+                    onChange={(e) =>
+                      setDay(clampNumberString(e.target.value).slice(0, 2))
+                    }
+                    className="w-full min-w-0 h-[46px] rounded-xl border border-gray-300 text-center text-gray-500 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
+                    placeholder="DD"
+                  />
+                  <span className="text-base whitespace-nowrap">일</span>
+
+                  <span className="w-full text-center mx-1 text-lg">
+                    ({weekday || "-"})
+                  </span>
+                </div>
+              </div>
+
+              {/* Time */}
+              <div className="grid grid-cols-[88px_1fr] items-center gap-4">
+                <div className="text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
+                  시간
+                </div>
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                  {TIME_OPTIONS.map((t) => {
+                    const selected = time === t;
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setTime(t)}
+                        className={[
+                          "h-[44px] min-w-[78px] px-4 rounded-xl border",
+                          "text-base",
+                          selected
+                            ? "bg-main border-main text-white"
+                            : "bg-white border-gray-300 text-gray-500",
+                        ].join(" ")}
+                      >
+                        {t}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Guarantee */}
+              <div className="grid grid-cols-[88px_1fr] items-center gap-4">
+                <div className="text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
+                  보증인원
+                </div>
+                <div className="relative">
+                  <select
+                    value={guarantee}
+                    onChange={(e) => setGuarantee(e.target.value)}
+                    className={[
+                      "w-full h-[56px] rounded-2xl",
+                      "border border-gray-300",
+                      "px-5 pr-12",
+                      "text-base",
+                      guarantee ? "text-gray-900" : "text-gray-400",
+                      "outline-none focus:ring-2 focus:ring-main/30 focus:border-main",
+                      "appearance-none bg-white",
+                    ].join(" ")}
+                  >
+                    <option value="" disabled>
+                      선택
+                    </option>
+                    <option value="100">100명</option>
+                    <option value="150">150명</option>
+                    <option value="200">200명</option>
+                    <option value="250">250명</option>
+                    <option value="300">300명</option>
+                  </select>
+                  <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
+                    ▼
+                  </span>
+                </div>
+              </div>
+
+              {/* Meal price */}
+              <div className="grid grid-cols-[88px_1fr] items-center gap-4">
+                <div className="text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
+                  식대
+                </div>
+                <div className="relative">
+                  <input
+                    inputMode="numeric"
+                    value={mealPrice}
+                    onChange={(e) =>
+                      setMealPrice(
+                        clampNumberString(e.target.value).slice(0, 8),
+                      )
+                    }
+                    className="w-full h-[56px] rounded-2xl border border-gray-300 px-5 pr-12 text-base text-gray-900 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
+                    원
+                  </span>
+                </div>
+              </div>
+
+              {/* Hall fee */}
+              <div className="grid grid-cols-[88px_1fr] items-center gap-4">
+                <div className="text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
+                  홀 대관료
+                </div>
+                <div className="relative">
+                  <input
+                    inputMode="numeric"
+                    value={hallFee}
+                    onChange={(e) =>
+                      setHallFee(clampNumberString(e.target.value).slice(0, 8))
+                    }
+                    className="w-full h-[56px] rounded-2xl border border-gray-300 px-5 pr-12 text-base text-gray-900 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
+                    만원
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {!!uiError && (
+              <p className="mt-4 text-sm text-red-500 text-center">{uiError}</p>
+            )}
+
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={isLoading}
+              className={[
+                "mt-10 w-full h-[62px] rounded-2xl",
+                "bg-main text-white sm:text-lg md:text-xl font-700",
+                "disabled:opacity-60",
+              ].join(" ")}
+            >
+              내 견적 분석 받기
+            </button>
           </div>
 
-          {!isDragActive && !!message && (
-            <p className="mt-3 text-sm text-red-500">{message}</p>
-          )}
-
-          <p className="text-xs text-gray-400 underline cursor-pointer mt-auto pb-2">
+          <p className="text-xs text-gray-400 underline cursor-pointer mt-auto pt-8 pb-2">
             웨딩팩폭 더 알아보기
           </p>
         </div>
