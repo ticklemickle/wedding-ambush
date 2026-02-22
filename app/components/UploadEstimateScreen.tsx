@@ -1,10 +1,23 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 import FullScreenLoader from "./FullScreenLoader";
+import {
+  normalizeDay,
+  normalizeMonth,
+  sanitizeDayInput,
+  sanitizeMonthInput,
+  validateDayForYearMonth,
+} from "../utils/dateFields";
+import {
+  applyMoneyChange,
+  isMoneyValid,
+  maxDigitsFromMax,
+  normalizeOnBlur,
+} from "../utils/priceUtil";
 
 const TIME_OPTIONS = [
   "11:00",
@@ -28,13 +41,13 @@ const TIME_OPTIONS = [
   "20:00",
 ];
 
-function clampNumberString(v: string) {
-  return v.replace(/[^0-9]/g, "");
-}
+const MEAL_MIN = 10000;
+const MEAL_MAX = 500000;
+const HALL_MIN = 0;
+const HALL_MAX = 100000000;
 
-function getKoreanWeekday(date: Date) {
-  return ["일", "월", "화", "수", "목", "금", "토"][date.getDay()];
-}
+const MEAL_DIGITS = maxDigitsFromMax(MEAL_MAX); // 6
+const HALL_DIGITS = maxDigitsFromMax(HALL_MAX); // 9
 
 export default function UploadEstimateScreen() {
   const router = useRouter();
@@ -44,23 +57,45 @@ export default function UploadEstimateScreen() {
 
   // Form state (UI)
   const [weddingHall, setWeddingHall] = useState("");
-  const [year, setYear] = useState("2026");
-  const [month, setMonth] = useState("12");
-  const [day, setDay] = useState("31");
+  const [year, setYear] = useState("");
+  const [month, setMonth] = useState("");
+  const [day, setDay] = useState("");
   const [time, setTime] = useState("11:00");
   const [guarantee, setGuarantee] = useState("");
   const [mealPrice, setMealPrice] = useState("");
+  const [mealPriceTouched, setMealPriceTouched] = useState(false);
+  const [hallFeeTouched, setHallFeeTouched] = useState(false);
   const [hallFee, setHallFee] = useState("");
 
-  const weekday = useMemo(() => {
-    const y = Number(year);
-    const m = Number(month);
-    const d = Number(day);
-    if (!y || !m || !d) return "";
-    const dt = new Date(y, m - 1, d);
-    if (Number.isNaN(dt.getTime())) return "";
-    return getKoreanWeekday(dt);
-  }, [year, month, day]);
+  const onMonthChange = (v: string) => setMonth(sanitizeMonthInput(v));
+  const onDayChange = (v: string) => setDay(sanitizeDayInput(v));
+
+  const mealValid = isMoneyValid(mealPrice, MEAL_MIN, MEAL_MAX, true);
+  const hallValid = isMoneyValid(hallFee, HALL_MIN, HALL_MAX, true);
+
+  const mealInvalid = mealPriceTouched && !mealValid;
+  const hallInvalid = hallFeeTouched && !hallValid;
+
+  const onMonthBlur = () => {
+    const m = normalizeMonth(month);
+    const d = validateDayForYearMonth(year, m, day);
+    setMonth(m);
+    if (year && m) setDay(d);
+    else if (!m) setDay(""); // month 무효면 day도 비움(원치 않으면 제거)
+  };
+
+  const onDayBlur = () => {
+    const dNorm = normalizeDay(day);
+    const d = validateDayForYearMonth(year, month, dNorm);
+    setDay(d);
+  };
+
+  // year/month 바뀌어서 day가 존재하지 않는 날짜가 되면 자동으로 비움
+  useEffect(() => {
+    const d = validateDayForYearMonth(year, month, day);
+    if (d !== day) setDay(d);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, month]);
 
   const canSubmit = useMemo(() => {
     return (
@@ -80,7 +115,7 @@ export default function UploadEstimateScreen() {
     setUiError("");
 
     if (!canSubmit) {
-      setUiError("필수 항목을 모두 입력해주세요.");
+      setUiError("입력되지 않은 항목을 확인 해주세요");
       return;
     }
 
@@ -111,7 +146,7 @@ export default function UploadEstimateScreen() {
           "bg-white flex flex-col items-center text-center relative",
           "w-full max-w-md",
           "border-4 border-main rounded-3xl",
-          "px-4 py-12",
+          "px-4 pt-12 pb-2",
         ].join(" ")}
       >
         {isLoading && (
@@ -140,7 +175,6 @@ export default function UploadEstimateScreen() {
 
           {/* Form */}
           <div className="w-full px-2">
-            {/* Wedding hall select */}
             <div className="relative w-full mt-2">
               <select
                 value={weddingHall}
@@ -152,91 +186,105 @@ export default function UploadEstimateScreen() {
                   "text-base",
                   weddingHall ? "text-gray-900" : "text-gray-400",
                   "outline-none focus:ring-2 focus:ring-main/30 focus:border-main",
-                  "appearance-none bg-white",
+                  " bg-white",
+                  "appearance-none",
                 ].join(" ")}
               >
                 <option value="" disabled>
-                  웨딩홀 선택
+                  예식 지역 선택
                 </option>
                 {/* 예시 옵션 - 실제 데이터로 교체 */}
-                <option value="a">A 웨딩홀</option>
-                <option value="b">B 웨딩홀</option>
-                <option value="c">C 웨딩홀</option>
+                <option value="a">서울 강남</option>
+                <option value="b">서울 강북</option>
+                <option value="c">서울 강서</option>
               </select>
-              <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
-                ▼
-              </span>
+
+              {/* 커스텀 화살표 */}
+              <svg
+                className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.7a.75.75 0 111.06 1.06l-4.24 4.25a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"
+                  clipRule="evenodd"
+                />
+              </svg>
             </div>
 
             <div className="mt-8 space-y-5">
-              {/* Date */}
+              <div className="mb-2 text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
+                예식 날짜
+              </div>
               <div className="w-full text-left font-700 text-black tracking-[-0.02em]">
                 <div className="grid grid-cols-[minmax(54,2.5fr)_auto_minmax(44px,2fr)_auto_minmax(44px,2fr)_auto_auto] items-center gap-2">
-                  <input
-                    inputMode="numeric"
+                  <select
                     value={year}
-                    onChange={(e) =>
-                      setYear(clampNumberString(e.target.value).slice(0, 4))
-                    }
-                    className="w-full min-w-0 h-[46px] rounded-xl border border-gray-300 text-center text-gray-500 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
-                    placeholder="YYYY"
-                  />
+                    onChange={(e) => setYear(e.target.value)}
+                    className="w-full min-w-0 h-[46px] rounded-xl border border-gray-300 text-center text-gray-500 outline-none focus:ring-2 focus:ring-main/30 focus:border-main bg-white"
+                  >
+                    <option value="">선택</option>
+                    <option value="2026">2026</option>
+                    <option value="2027">2027</option>
+                    <option value="2028">2028</option>
+                  </select>
                   <span className="text-base whitespace-nowrap">년</span>
 
                   <input
+                    type="text"
                     inputMode="numeric"
+                    pattern="[0-9]*"
                     value={month}
-                    onChange={(e) =>
-                      setMonth(clampNumberString(e.target.value).slice(0, 2))
-                    }
-                    className="w-full min-w-0 h-[46px] rounded-xl border border-gray-300 text-center text-gray-500 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
-                    placeholder="MM"
+                    onChange={(e) => onMonthChange(e.target.value)}
+                    onBlur={onMonthBlur}
+                    className={[
+                      "w-full min-w-0 h-[46px] rounded-xl border text-center outline-none focus:ring-2 border-gray-300 text-gray-500 focus:ring-main/30 focus:border-main",
+                      month,
+                    ].join(" ")}
                   />
                   <span className="text-base whitespace-nowrap">월</span>
 
                   <input
+                    type="text"
                     inputMode="numeric"
+                    pattern="[0-9]*"
                     value={day}
-                    onChange={(e) =>
-                      setDay(clampNumberString(e.target.value).slice(0, 2))
-                    }
-                    className="w-full min-w-0 h-[46px] rounded-xl border border-gray-300 text-center text-gray-500 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
-                    placeholder="DD"
+                    onChange={(e) => onDayChange(e.target.value)}
+                    onBlur={onDayBlur}
+                    className={[
+                      "w-full min-w-0 h-[46px] rounded-xl border text-center outline-none focus:ring-2 border-gray-300 text-gray-500 focus:ring-main/30 focus:border-main",
+                      day,
+                    ].join(" ")}
                   />
                   <span className="text-base whitespace-nowrap">일</span>
-
-                  <span className="w-full text-center mx-1 text-lg">
-                    ({weekday || "-"})
-                  </span>
                 </div>
               </div>
 
               {/* Time */}
-              <div className="grid grid-cols-[88px_1fr] items-center gap-4">
-                <div className="text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
-                  시간
-                </div>
-                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-                  {TIME_OPTIONS.map((t) => {
-                    const selected = time === t;
-                    return (
-                      <button
-                        key={t}
-                        type="button"
-                        onClick={() => setTime(t)}
-                        className={[
-                          "h-[44px] min-w-[78px] px-4 rounded-xl border",
-                          "text-base",
-                          selected
-                            ? "bg-main border-main text-white"
-                            : "bg-white border-gray-300 text-gray-500",
-                        ].join(" ")}
-                      >
-                        {t}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="mb-2 text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
+                예식 시간
+              </div>
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                {TIME_OPTIONS.map((t) => {
+                  const selected = time === t;
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setTime(t)}
+                      className={[
+                        "h-[44px] min-w-[78px] px-4 rounded-xl border",
+                        "text-base",
+                        selected
+                          ? "bg-main border-main text-white"
+                          : "bg-white border-gray-300 text-gray-500",
+                      ].join(" ")}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Guarantee */}
@@ -245,49 +293,76 @@ export default function UploadEstimateScreen() {
                   보증인원
                 </div>
                 <div className="relative">
-                  <select
-                    value={guarantee}
-                    onChange={(e) => setGuarantee(e.target.value)}
-                    className={[
-                      "w-full h-[56px] rounded-2xl",
-                      "border border-gray-300",
-                      "px-5 pr-12",
-                      "text-base",
-                      guarantee ? "text-gray-900" : "text-gray-400",
-                      "outline-none focus:ring-2 focus:ring-main/30 focus:border-main",
-                      "appearance-none bg-white",
-                    ].join(" ")}
-                  >
-                    <option value="" disabled>
-                      선택
-                    </option>
-                    <option value="100">100명</option>
-                    <option value="150">150명</option>
-                    <option value="200">200명</option>
-                    <option value="250">250명</option>
-                    <option value="300">300명</option>
-                  </select>
-                  <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
-                    ▼
-                  </span>
+                  <div className="relative">
+                    <select
+                      value={guarantee}
+                      onChange={(e) => setGuarantee(e.target.value)}
+                      className={[
+                        "w-full h-[56px] rounded-2xl",
+                        "border border-gray-300",
+                        "px-5 pr-14", // 👉 아이콘 공간 확보
+                        "text-base",
+                        guarantee ? "text-gray-900" : "text-gray-400",
+                        "outline-none focus:ring-2 focus:ring-main/30 focus:border-main",
+                        "bg-white",
+                        "appearance-none", // 👉 기본 화살표 제거 (핵심)
+                      ].join(" ")}
+                    >
+                      <option value="" disabled>
+                        선택
+                      </option>
+                      <option value="100">100명</option>
+                      <option value="150">150명</option>
+                      <option value="200">200명</option>
+                      <option value="250">250명</option>
+                      <option value="300">300명</option>
+                    </select>
+
+                    <svg
+                      className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.7a.75.75 0 111.06 1.06l-4.24 4.25a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </div>
                 </div>
               </div>
 
               {/* Meal price */}
               <div className="grid grid-cols-[88px_1fr] items-center gap-4">
                 <div className="text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
-                  식대
+                  1인 식대
                 </div>
+
                 <div className="relative">
                   <input
+                    type="text"
                     inputMode="numeric"
+                    pattern="[0-9]*"
                     value={mealPrice}
                     onChange={(e) =>
                       setMealPrice(
-                        clampNumberString(e.target.value).slice(0, 8),
+                        applyMoneyChange(e.target.value, MEAL_DIGITS),
                       )
                     }
-                    className="w-full h-[56px] rounded-2xl border border-gray-300 px-5 pr-12 text-base text-gray-900 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
+                    onBlur={() => {
+                      setMealPriceTouched(true);
+                      setMealPrice(
+                        normalizeOnBlur(mealPrice, MEAL_MIN, MEAL_MAX, true),
+                      );
+                    }}
+                    className={[
+                      "w-full h-[56px] rounded-2xl border px-5 pr-12 text-base text-right outline-none focus:ring-2",
+                      mealInvalid
+                        ? "border-red-500 text-red-600 focus:ring-red-200 focus:border-red-500"
+                        : "border-gray-300 text-gray-900 focus:ring-main/30 focus:border-main",
+                    ].join(" ")}
+                    placeholder="50,000"
                   />
                   <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
                     원
@@ -300,33 +375,48 @@ export default function UploadEstimateScreen() {
                 <div className="text-left font-700 text-black sm:text-lg md:text-xl tracking-[-0.02em]">
                   홀 대관료
                 </div>
+
                 <div className="relative">
                   <input
+                    type="text"
                     inputMode="numeric"
+                    pattern="[0-9]*"
                     value={hallFee}
                     onChange={(e) =>
-                      setHallFee(clampNumberString(e.target.value).slice(0, 8))
+                      setHallFee(applyMoneyChange(e.target.value, HALL_DIGITS))
                     }
-                    className="w-full h-[56px] rounded-2xl border border-gray-300 px-5 pr-12 text-base text-gray-900 outline-none focus:ring-2 focus:ring-main/30 focus:border-main"
+                    onBlur={() => {
+                      setHallFeeTouched(true);
+                      setHallFee(
+                        normalizeOnBlur(hallFee, HALL_MIN, HALL_MAX, true),
+                      );
+                    }}
+                    className={[
+                      "w-full h-[56px] rounded-2xl border px-5 pr-12 text-base text-right outline-none focus:ring-2",
+                      hallInvalid
+                        ? "border-red-500 text-red-600 focus:ring-red-200 focus:border-red-500"
+                        : "border-gray-300 text-gray-900 focus:ring-main/30 focus:border-main",
+                    ].join(" ")}
+                    placeholder="0"
                   />
                   <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
-                    만원
+                    원
                   </span>
                 </div>
               </div>
             </div>
 
-            {!!uiError && (
-              <p className="mt-4 text-sm text-red-500 text-center">{uiError}</p>
-            )}
+            <p className="mt-4 text-sm text-red-500 text-center min-h-[1.25rem]">
+              {uiError}
+            </p>
 
             <button
               type="button"
               onClick={onSubmit}
               disabled={isLoading}
               className={[
-                "mt-10 w-full h-[62px] rounded-2xl",
-                "bg-main text-white sm:text-lg md:text-xl font-700",
+                "mt-8 w-full h-[62px] rounded-2xl",
+                "bg-main text-white text-lg font-700",
                 "disabled:opacity-60",
               ].join(" ")}
             >
