@@ -56,7 +56,7 @@ export default function UploadEstimateScreen() {
   const [uiError, setUiError] = useState("");
 
   // Form state (UI)
-  const [weddingHall, setWeddingHall] = useState("");
+  const [region, setRegion] = useState("");
   const [year, setYear] = useState("");
   const [month, setMonth] = useState("");
   const [day, setDay] = useState("");
@@ -99,7 +99,7 @@ export default function UploadEstimateScreen() {
 
   const canSubmit = useMemo(() => {
     return (
-      !!weddingHall &&
+      !!region &&
       year.length === 4 &&
       !!month &&
       !!day &&
@@ -108,7 +108,7 @@ export default function UploadEstimateScreen() {
       !!mealPrice &&
       !!hallFee
     );
-  }, [weddingHall, year, month, day, time, guarantee, mealPrice, hallFee]);
+  }, [region, year, month, day, time, guarantee, mealPrice, hallFee]);
 
   const onSubmit = async () => {
     if (isLoading) return;
@@ -119,12 +119,10 @@ export default function UploadEstimateScreen() {
       return;
     }
 
-    // 디자인 반영 목적의 UI 화면입니다.
-    // 실제 분석 API/라우팅은 프로젝트 스펙에 맞춰 연결해 주세요.
     setIsLoading(true);
     try {
       const params = new URLSearchParams({
-        weddingHall,
+        region,
         date: `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`,
         time,
         guarantee,
@@ -177,14 +175,14 @@ export default function UploadEstimateScreen() {
           <div className="w-full px-2">
             <div className="relative w-full mt-2">
               <select
-                value={weddingHall}
-                onChange={(e) => setWeddingHall(e.target.value)}
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
                 className={[
                   "w-full h-[56px] rounded-2xl",
                   "border border-gray-300",
                   "px-5 pr-12",
                   "text-base",
-                  weddingHall ? "text-gray-900" : "text-gray-400",
+                  region ? "text-gray-900" : "text-gray-400",
                   "outline-none focus:ring-2 focus:ring-main/30 focus:border-main",
                   " bg-white",
                   "appearance-none",
